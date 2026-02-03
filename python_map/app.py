@@ -7,8 +7,8 @@ import folium
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QListWidget, QListWidgetItem, QLabel,
-    QSpinBox, QSplitter
-)
+    QSpinBox, QSplitter, QTextEdit
+) 
 from PyQt5.QtCore import Qt, QTimer, QUrl
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
@@ -41,6 +41,48 @@ class MapApp(QMainWindow):
 
         self.status_label = QLabel("No file loaded")
         left_layout.addWidget(self.status_label)
+
+        # Current file label
+        self.current_file_label = QLabel("No file selected")
+        left_layout.addWidget(self.current_file_label)
+
+        # Start panel with big actions
+        self.start_panel = QWidget()
+        start_layout = QVBoxLayout()
+        self.start_panel.setLayout(start_layout)
+        start_layout.addStretch()
+        start_layout.addWidget(QLabel("Welcome to Python Map Viewer"))
+        btn_open = QPushButton("Open File")
+        btn_open.clicked.connect(self.open_file)
+        start_layout.addWidget(btn_open)
+        btn_sample = QPushButton("Load Sample Data")
+        btn_sample.clicked.connect(lambda: self.load_data(os.path.join(os.path.dirname(__file__), 'sample_data.csv')))
+        start_layout.addWidget(btn_sample)
+        btn_headless = QPushButton("Create HTML Map (Headless)")
+        btn_headless.clicked.connect(self.headless_dialog)
+        start_layout.addWidget(btn_headless)
+        btn_shot = QPushButton("Capture Screenshot")
+        btn_shot.clicked.connect(self.screenshot_dialog)
+        start_layout.addWidget(btn_shot)
+        btn_exit = QPushButton("Exit")
+        btn_exit.clicked.connect(QApplication.instance().quit)
+        start_layout.addWidget(btn_exit)
+        start_layout.addStretch()
+
+        left_layout.addWidget(self.start_panel)
+
+        # Log view
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumHeight(140)
+        left_layout.addWidget(QLabel("Activity Log:"))
+        left_layout.addWidget(self.log_view)
+
+        # Track the currently loaded file path
+        self.current_file_path = None
+
+        # Allow drag & drop of files onto the window
+        self.setAcceptDrops(True) 
 
         left_layout.addWidget(QLabel("Select Fields to Show in Popups:"))
         self.fields_list = QListWidget()
@@ -131,10 +173,18 @@ class MapApp(QMainWindow):
 
         self.df = df
         self.filtered_df = df.copy()
+        self.current_file_path = path
+        self.current_file_label.setText(os.path.basename(path))
         self.status_label.setText(f"Loaded {len(df)} rows from {os.path.basename(path)}")
+        self.append_log(f"Loaded {len(df)} rows from {path}")
         self.populate_fields()
         self.populate_filters()
         self.update_map()
+        # Hide start panel after loading
+        try:
+            self.start_panel.hide()
+        except Exception:
+            pass 
 
     def prompt_for_file(self):
         """Prompt user to select a file on startup or use a command-line argument if provided."""
@@ -148,6 +198,41 @@ class MapApp(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Open data file", "", "Excel Files (*.xls *.xlsx);;CSV Files (*.csv)")
         if path:
             self.load_data(path)
+
+    def append_log(self, text):
+        try:
+            self.log_view.append(text)
+        except Exception:
+            print(text)
+
+    def headless_dialog(self):
+        """Create an HTML map from the current file (or prompt for one)."""
+        if not self.current_file_path:
+            path, _ = QFileDialog.getOpenFileName(self, "Select data file for headless map", "", "Excel Files (*.xls *.xlsx);;CSV Files (*.csv)")
+            if not path:
+                return
+        else:
+            path = self.current_file_path
+        out, _ = QFileDialog.getSaveFileName(self, "Save HTML map as", "map.html", "HTML Files (*.html)")
+        if not out:
+            return
+        create_map_headless(path, out_path=out)
+        self.append_log(f"Headless map created: {out}")
+
+    def screenshot_dialog(self):
+        """Capture a screenshot of the current window after loading data (if needed)."""
+        out, _ = QFileDialog.getSaveFileName(self, "Save screenshot as", "screenshot.png", "PNG Files (*.png)")
+        if not out:
+            return
+        # If there is no loaded data, prompt for a file first
+        if not self.current_file_path:
+            path, _ = QFileDialog.getOpenFileName(self, "Select data file", "", "Excel Files (*.xls *.xlsx);;CSV Files (*.csv)")
+            if not path:
+                return
+            self.load_data(path)
+        # Allow a short delay for the map to render
+        QTimer.singleShot(1500, lambda: self.take_screenshot(out, quit_after=False))
+        self.append_log(f"Screenshot scheduled: {out}") 
 
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open data file", "", "Excel Files (*.xls *.xlsx);;CSV Files (*.csv)")
@@ -296,15 +381,34 @@ class MapApp(QMainWindow):
         self.map_zoom = val
         self.update_map()
 
-    def take_screenshot(self, out_path):
-        """Grab the main window and save as an image then quit the app."""
+    def take_screenshot(self, out_path, quit_after=True):
+        """Grab the main window and save as an image. Optionally quit the app after."""
         try:
             pix = self.grab()
             pix.save(out_path)
-            print(f"Screenshot saved to {out_path}")
+            self.append_log(f"Screenshot saved to {out_path}")
         except Exception as e:
-            print(f"Screenshot failed: {e}")
-        QTimer.singleShot(250, QApplication.instance().quit)
+            self.append_log(f"Screenshot failed: {e}")
+        if quit_after:
+            QTimer.singleShot(250, QApplication.instance().quit)
+
+    # Drag and drop support -------------------------------------------------
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        # Use the first file only
+        path = urls[0].toLocalFile()
+        if os.path.exists(path):
+            self.append_log(f"File dropped: {path}")
+            self.load_data(path)
+
 
 
 def create_map_headless(path, zoom=6, out_path='headless_map.html'):
