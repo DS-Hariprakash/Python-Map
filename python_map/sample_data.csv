@@ -1,0 +1,6 @@
+Name,Latitude,Longitude,City,District,State,Info
+Location A,28.7041,77.1025,New Delhi,New Delhi,Delhi,"Sample place A"
+Location B,19.0760,72.8777,Mumbai,Mumbai,Maharashtra,"Sample place B"
+Location C,13.0827,80.2707,Chennai,Chennai,Tamil Nadu,"Sample place C"
+Location D,22.5726,88.3639,Kolkata,Kolkata,West Bengal,"Sample place D"
+Location E,12.9716,77.5946,Bengaluru,Bengaluru,Karnataka,"Sample place E"
