@@ -3,12 +3,13 @@ import os
 import tempfile
 import pandas as pd
 import folium
+import shutil
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QListWidget, QListWidgetItem, QLabel,
-    QSpinBox, QSplitter, QTextEdit
-) 
+    QSpinBox, QSplitter, QTextEdit, QAbstractItemView
+)
 from PyQt5.QtCore import Qt, QTimer, QUrl
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
@@ -84,9 +85,51 @@ class MapApp(QMainWindow):
         # Allow drag & drop of files onto the window
         self.setAcceptDrops(True) 
 
-        left_layout.addWidget(QLabel("Select Fields to Show in Popups:"))
+        left_layout.addWidget(QLabel("Available Fields (drag to targets):"))
         self.fields_list = QListWidget()
+        self.fields_list.setDragEnabled(True)
+        self.fields_list.setSelectionMode(QListWidget.SingleSelection)
+        self.fields_list.setDragDropMode(QAbstractItemView.DragOnly)
         left_layout.addWidget(self.fields_list)
+
+        # Drop targets for Latitude / Longitude / Info fields
+        left_layout.addWidget(QLabel("Set Latitude (drop 1 field):"))
+        self.lat_list = QListWidget()
+        self.lat_list.setAcceptDrops(True)
+        self.lat_list.setDragDropMode(QAbstractItemView.DropOnly)
+        self.lat_list.setMaximumHeight(40)
+        left_layout.addWidget(self.lat_list)
+
+        clear_lat_btn = QPushButton("Clear Latitude")
+        clear_lat_btn.clicked.connect(lambda: self.lat_list.clear())
+        left_layout.addWidget(clear_lat_btn)
+
+        left_layout.addWidget(QLabel("Set Longitude (drop 1 field):"))
+        self.lon_list = QListWidget()
+        self.lon_list.setAcceptDrops(True)
+        self.lon_list.setDragDropMode(QAbstractItemView.DropOnly)
+        self.lon_list.setMaximumHeight(40)
+        left_layout.addWidget(self.lon_list)
+
+        clear_lon_btn = QPushButton("Clear Longitude")
+        clear_lon_btn.clicked.connect(lambda: self.lon_list.clear())
+        left_layout.addWidget(clear_lon_btn)
+
+        left_layout.addWidget(QLabel("Info Fields (drop any fields to include in popup/tooltip):"))
+        self.info_list = QListWidget()
+        self.info_list.setAcceptDrops(True)
+        self.info_list.setDragDropMode(QAbstractItemView.DropOnly)
+        self.info_list.setSelectionMode(QListWidget.MultiSelection)
+        left_layout.addWidget(self.info_list)
+
+        clear_info_btn = QPushButton("Clear Info Fields")
+        clear_info_btn.clicked.connect(lambda: self.info_list.clear())
+        left_layout.addWidget(clear_info_btn)
+
+        # Save map button
+        self.save_map_btn = QPushButton("Save Map As...")
+        self.save_map_btn.clicked.connect(self.save_map_as)
+        left_layout.addWidget(self.save_map_btn)
 
         left_layout.addWidget(QLabel("Filter by State:"))
         self.state_list = QListWidget()
@@ -242,12 +285,16 @@ class MapApp(QMainWindow):
 
     def populate_fields(self):
         self.fields_list.clear()
+        self.lat_list.clear()
+        self.lon_list.clear()
+        self.info_list.clear()
         if self.df is None:
             return
         for col in self.df.columns:
             item = QListWidgetItem(col)
-            item.setCheckState(Qt.Unchecked)
+            # Make these draggable by providing text representation
             self.fields_list.addItem(item)
+
 
     def populate_filters(self):
         # State
@@ -302,16 +349,24 @@ class MapApp(QMainWindow):
         self.update_map()
 
     def find_lat_lon_columns(self):
+        # Priority: user-dropped fields, then auto-detect by name
         if self.df is None:
             return None, None
-        cols = [c.lower() for c in self.filtered_df.columns]
+        # Check user-specified drop targets
         lat = None
         lon = None
+        if self.lat_list.count() > 0:
+            lat = self.lat_list.item(0).text()
+        if self.lon_list.count() > 0:
+            lon = self.lon_list.item(0).text()
+        if lat and lon:
+            return lat, lon
+        # Fallback to auto-detect
         for c in self.filtered_df.columns:
             lc = c.lower()
-            if lc in ('lat', 'latitude'):
+            if lc in ('lat', 'latitude') and not lat:
                 lat = c
-            if lc in ('lon', 'lng', 'longitude'):
+            if lc in ('lon', 'lng', 'longitude') and not lon:
                 lon = c
         return lat, lon
 
@@ -337,20 +392,24 @@ class MapApp(QMainWindow):
 
         folium_map = folium.Map(location=[mean_lat, mean_lon], zoom_start=self.map_zoom)
 
-        fields = self.get_selected_fields()
+        # Determine info fields (from info_list if set, otherwise previously selected fields)
+        info_fields = [self.info_list.item(i).text() for i in range(self.info_list.count())] if self.info_list.count() > 0 else self.get_selected_fields()
         for _, row in df.iterrows():
             try:
                 lat = float(row[lat_col])
                 lon = float(row[lon_col])
             except Exception:
                 continue
-            popup = ''
-            if fields:
-                popup = '<br>'.join(f"<b>{f}</b>: {row.get(f, '')}" for f in fields)
+            # Prepare popup (click) and tooltip (hover)
+            if info_fields:
+                popup = '<br>'.join(f"<b>{f}</b>: {row.get(f, '')}" for f in info_fields)
+                tooltip = ' | '.join(f"{f}: {row.get(f, '')}" for f in info_fields)
+                # Add a header 'Source' then the fields in the popup
+                popup = '<b>Source</b><br>' + popup
             else:
-                # Default popup
                 popup = '<br>'.join(f"<b>{c}</b>: {row.get(c, '')}" for c in ['City','District','State'] if c in self.filtered_df.columns)
-            folium.Marker([lat, lon], popup=popup).add_to(folium_map)
+                tooltip = ''
+            folium.Marker([lat, lon], popup=popup, tooltip=tooltip).add_to(folium_map)
 
         folium_map.save(self.temp_map_path)
         self.map_view.load(QUrl.fromLocalFile(self.temp_map_path))
@@ -366,6 +425,20 @@ class MapApp(QMainWindow):
             self.status_label.setText(f"Exported {len(self.filtered_df)} rows to {os.path.basename(path)}")
         except Exception as e:
             self.status_label.setText(f"Export failed: {e}")
+
+    def save_map_as(self):
+        # Save the currently rendered map HTML to a user-specified path
+        if not os.path.exists(self.temp_map_path):
+            self.append_log("No map available to save")
+            return
+        out, _ = QFileDialog.getSaveFileName(self, "Save map as", "map.html", "HTML Files (*.html)")
+        if not out:
+            return
+        try:
+            shutil.copyfile(self.temp_map_path, out)
+            self.append_log(f"Map saved to {out}")
+        except Exception as e:
+            self.append_log(f"Failed to save map: {e}")
 
     def zoom_in(self):
         self.map_zoom = min(18, self.map_zoom + 1)
